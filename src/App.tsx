@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Download, Mail, FileText, Truck, Receipt, Settings, Plus, Trash2, History, Save, FilePlus, ChevronRight, Archive, Eye, LogOut, UserPlus, Search, RefreshCw, TriangleAlert, Menu, LayoutDashboard, Sheet, X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Download, Mail, FileText, Truck, Receipt, Settings, Plus, Trash2, History, Save, FilePlus, ChevronRight, Archive, Eye, LogOut, UserPlus, Search, RefreshCw, TriangleAlert, Menu, LayoutDashboard, Sheet, X, PenTool } from 'lucide-react';
 import { Toaster, toast } from 'react-hot-toast';
+import SignatureCanvas from 'react-signature-canvas';
 import { DocumentType, DocumentHistoryEntry, InvoiceData, EWayBillData, ReceiptData } from './types';
 import { DEFAULT_INVOICE, DEFAULT_EWAY_BILL, DEFAULT_RECEIPT } from './defaults';
 import { InvoiceTemplate } from './components/InvoiceTemplate';
@@ -22,9 +23,17 @@ export default function App() {
   const [history, setHistory] = useState<DocumentHistoryEntry[]>([]);
   const [historySearch, setHistorySearch] = useState('');
   
-  const [companyConfig, setCompanyConfig] = useState({
+  const [companyConfig, setCompanyConfig] = useState<{
+    logoUrl?: string;
+    signatureUrl?: string;
+    accentColor?: string;
+    templateStyle?: 'modern' | 'classic';
+    includeQrCode?: boolean;
+  }>({
     logoUrl: '',
-    signatureUrl: ''
+    signatureUrl: '',
+    templateStyle: 'classic',
+    includeQrCode: false
   });
 
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
@@ -32,6 +41,9 @@ export default function App() {
   const [currentPdfBase64, setCurrentPdfBase64] = useState<string | undefined>();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [historyFilter, setHistoryFilter] = useState<'all' | 'invoice' | 'ewaybill' | 'receipt'>('all');
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
+  const sigPad = useRef<SignatureCanvas>(null);
+  const [showSigPad, setShowSigPad] = useState(false);
   
   // Admin User Creation
   const [newUsername, setNewUsername] = useState('');
@@ -41,8 +53,31 @@ export default function App() {
   useEffect(() => {
     if (session?.token) {
       fetchHistory();
+      
+      const savedInvoice = localStorage.getItem('autosave_invoice');
+      const savedReceipt = localStorage.getItem('autosave_receipt');
+      const savedEway = localStorage.getItem('autosave_eway');
+      const savedConfig = localStorage.getItem('autosave_config');
+
+      if (savedInvoice) setInvoiceData(JSON.parse(savedInvoice));
+      if (savedReceipt) setReceiptData(JSON.parse(savedReceipt));
+      if (savedEway) setEwayBillData(JSON.parse(savedEway));
+      if (savedConfig) setCompanyConfig(JSON.parse(savedConfig));
     }
   }, [session]);
+
+  // Auto-save logic
+  useEffect(() => {
+    if (session?.token) {
+      const timer = setTimeout(() => {
+        localStorage.setItem('autosave_invoice', JSON.stringify(invoiceData));
+        localStorage.setItem('autosave_receipt', JSON.stringify(receiptData));
+        localStorage.setItem('autosave_eway', JSON.stringify(ewayBillData));
+        localStorage.setItem('autosave_config', JSON.stringify(companyConfig));
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [invoiceData, receiptData, ewayBillData, companyConfig, session]);
 
   const fetchHistory = async () => {
     try {
@@ -136,6 +171,34 @@ export default function App() {
       } catch (err) {
         console.error('Failed to sync to database', err);
       }
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedHistoryIds.length === 0) return;
+    const confirm = window.confirm(`Are you sure you want to delete ${selectedHistoryIds.length} document(s)?`);
+    if (!confirm) return;
+
+    try {
+      const res = await fetch('/api/documents', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.token}`
+        },
+        body: JSON.stringify({ ids: selectedHistoryIds })
+      });
+      
+      if (res.ok) {
+        toast.success(`Deleted ${selectedHistoryIds.length} documents`);
+        setSelectedHistoryIds([]);
+        fetchHistory();
+      } else {
+        throw new Error('Failed to delete');
+      }
+    } catch (err) {
+      toast.error('Failed to delete documents');
+      console.error(err);
     }
   };
 
@@ -291,22 +354,6 @@ export default function App() {
     return <Login onLogin={(token, role, username) => setSession({ token, role, username })} />;
   }
 
-  // Merge company config into document data for templates
-  const currentInvoiceData = {
-    ...invoiceData,
-    company: { ...invoiceData.company, logoUrl: companyConfig.logoUrl, signatureUrl: companyConfig.signatureUrl }
-  };
-  
-  const currentEWayBillData = {
-    ...ewayBillData,
-    supplier: { ...ewayBillData.supplier, logoUrl: companyConfig.logoUrl, signatureUrl: companyConfig.signatureUrl }
-  };
-
-  const currentReceiptData = {
-    ...receiptData,
-    company: { ...receiptData.company, logoUrl: companyConfig.logoUrl, signatureUrl: companyConfig.signatureUrl }
-  };
-
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'logoUrl' | 'signatureUrl') => {
     const file = e.target.files?.[0];
     if (file) {
@@ -317,6 +364,12 @@ export default function App() {
       reader.readAsDataURL(file);
     }
   };
+
+  const currentCompanyData = { ...DEFAULT_INVOICE.company, ...companyConfig };
+  
+  const currentInvoiceData = { ...invoiceData, company: currentCompanyData };
+  const currentEWayBillData = { ...ewayBillData, supplier: { ...ewayBillData.supplier, ...companyConfig } };
+  const currentReceiptData = { ...receiptData, company: currentCompanyData };
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans overflow-hidden relative text-slate-900">
@@ -489,11 +542,19 @@ export default function App() {
                       className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
-                  <div className="w-full sm:w-40">
+                  <div className="w-full sm:w-auto flex items-center gap-2">
+                      {selectedHistoryIds.length > 0 && (
+                        <button 
+                          onClick={handleDeleteSelected}
+                          className="px-3 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-bold flex items-center gap-1.5 hover:bg-red-100"
+                        >
+                          <Trash2 size={16} /> Delete Selected ({selectedHistoryIds.length})
+                        </button>
+                      )}
                       <select 
                         value={historyFilter} 
                         onChange={(e: any) => setHistoryFilter(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                        className="w-full sm:w-40 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                       >
                         <option value="all">All Documents</option>
                         <option value="invoice">Invoices</option>
@@ -516,6 +577,19 @@ export default function App() {
                     <table className="w-full text-sm text-left">
                       <thead className="bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-500 uppercase tracking-wider">
                         <tr>
+                          <th className="px-6 py-4 w-12 text-center">
+                            <input 
+                              type="checkbox" 
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedHistoryIds(history.map(h => h.id));
+                                } else {
+                                  setSelectedHistoryIds([]);
+                                }
+                              }}
+                              className="rounded border-slate-300"
+                            />
+                          </th>
                           <th className="px-6 py-4">Document</th>
                           <th className="px-6 py-4">Client</th>
                           <th className="px-6 py-4">Date generated</th>
@@ -531,7 +605,21 @@ export default function App() {
                             entry.clientName?.toLowerCase().includes(historySearch.toLowerCase()))
                           )
                           .map((entry) => (
-                          <tr key={entry.id} className="hover:bg-slate-50/80 transition-colors">
+                          <tr key={entry.id} className={`transition-colors ${selectedHistoryIds.includes(entry.id) ? 'bg-blue-50/50' : 'hover:bg-slate-50/80'}`}>
+                            <td className="px-6 py-4 text-center">
+                              <input 
+                                type="checkbox" 
+                                checked={selectedHistoryIds.includes(entry.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedHistoryIds(prev => [...prev, entry.id]);
+                                  } else {
+                                    setSelectedHistoryIds(prev => prev.filter(id => id !== entry.id));
+                                  }
+                                }}
+                                className="rounded border-slate-300"
+                              />
+                            </td>
                             <td className="px-6 py-4">
                               <div className="flex flex-col">
                                 <span className="font-bold text-slate-900">{entry.documentNumber}</span>
@@ -589,16 +677,53 @@ export default function App() {
 
                   <div>
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Electronic Signature</label>
-                    <div className="flex items-center gap-4">
+                    <div className="flex flex-col gap-4">
                       {companyConfig.signatureUrl && (
-                        <img src={companyConfig.signatureUrl} alt="Signature Preview" className="h-16 object-contain border border-slate-200 rounded p-1 bg-slate-50" />
+                        <div className="relative inline-block w-max">
+                          <img src={companyConfig.signatureUrl} alt="Signature Preview" className="h-20 object-contain border border-slate-200 rounded p-1 bg-slate-50" />
+                          <button onClick={() => setCompanyConfig(prev => ({...prev, signatureUrl: undefined}))} className="absolute -top-2 -right-2 bg-red-100 text-red-600 rounded-full p-1 border border-red-200 hover:bg-red-200"><X size={12} /></button>
+                        </div>
                       )}
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        onChange={(e) => handleImageUpload(e, 'signatureUrl')}
-                        className="text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                      />
+                      
+                      <div className="flex gap-4 items-center">
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={(e) => handleImageUpload(e, 'signatureUrl')}
+                          className="text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                        />
+                        <span className="text-slate-400 text-sm font-medium">OR</span>
+                        <button 
+                          onClick={() => setShowSigPad(!showSigPad)}
+                          className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <PenTool size={16} /> Draw Signature
+                        </button>
+                      </div>
+
+                      {showSigPad && (
+                        <div className="border border-slate-200 rounded-xl bg-slate-50 overflow-hidden w-[400px]">
+                          <div className="p-2 border-b border-slate-200 bg-white flex justify-between items-center">
+                            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Signature Pad</span>
+                            <div className="flex gap-2">
+                              <button onClick={() => sigPad.current?.clear()} className="text-xs text-slate-500 hover:text-slate-700 font-medium px-2 py-1">Clear</button>
+                              <button onClick={() => {
+                                if (!sigPad.current?.isEmpty()) {
+                                  setCompanyConfig(prev => ({...prev, signatureUrl: sigPad.current?.getTrimmedCanvas().toDataURL('image/png')}));
+                                  setShowSigPad(false);
+                                }
+                              }} className="text-xs bg-blue-600 text-white hover:bg-blue-700 rounded px-3 py-1 font-bold">Save Drawing</button>
+                            </div>
+                          </div>
+                          <div className="bg-white">
+                            <SignatureCanvas 
+                              ref={sigPad}
+                              canvasProps={{width: 400, height: 150, className: 'cursor-crosshair'}}
+                              penColor="black"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                   
@@ -610,6 +735,33 @@ export default function App() {
                       <button onClick={() => setCompanyConfig({...companyConfig, accentColor: '#2563eb'})} className="px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 rounded font-medium">Reset Default</button>
                     </div>
                     <p className="text-[10px] text-slate-400 mt-2 italic">Customize the border and header colors of generated documents.</p>
+                  </div>
+                  
+                  <div className="mt-6 pt-6 border-t border-slate-100">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Layout Options</label>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm text-slate-600 block mb-1">Template Style</label>
+                        <select 
+                          value={companyConfig.templateStyle || 'classic'} 
+                          onChange={(e: any) => setCompanyConfig({...companyConfig, templateStyle: e.target.value})}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-sm text-slate-800 outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="classic">Classic (Top Border)</option>
+                          <option value="modern">Modern (Sidebar Accent)</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2 pt-6">
+                        <input 
+                          type="checkbox" 
+                          id="qr-toggle"
+                          checked={companyConfig.includeQrCode || false} 
+                          onChange={(e: any) => setCompanyConfig({...companyConfig, includeQrCode: e.target.checked})}
+                          className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <label htmlFor="qr-toggle" className="text-sm text-slate-700 cursor-pointer select-none">Include Auth QR Code</label>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </section>

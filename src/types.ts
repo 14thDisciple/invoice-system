@@ -9,6 +9,8 @@ export interface CompanyDetails {
   logoUrl?: string;
   signatureUrl?: string;
   accentColor?: string;
+  templateStyle?: 'modern' | 'classic';
+  includeQrCode?: boolean;
 }
 
 export interface ClientDetails {

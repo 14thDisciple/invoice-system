@@ -137,6 +137,23 @@ app.post("/api/documents", authenticateToken, (req, res) => {
   }
 });
 
+// Batch Delete Documents
+app.delete("/api/documents", authenticateToken, (req, res) => {
+  const { ids } = req.body;
+  
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "No document IDs provided" });
+  }
+  
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`DELETE FROM documents WHERE id IN (${placeholders})`).run(...ids);
+    res.json({ success: true, deletedCount: ids.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.post("/api/send-email", authenticateToken, async (req, res) => {
   const { to, subject, body, pdfBase64, documentType } = req.body;
